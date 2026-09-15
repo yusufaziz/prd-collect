@@ -1,0 +1,100 @@
+# PRD — LCD Icon Matcher
+
+## What it is
+
+A Python library that finds which icon assets appear in an LCD screenshot,
+and where.
+
+## The problem
+
+We have a fixed-size scene image (e.g. `image.bmp`) and a library of icon
+assets. The icons were rendered into the scene at unknown positions. We need
+to know which icons are present and their coordinates.
+
+Feature matching (SIFT/ORB) is the wrong tool — icons are exact pixel copies,
+just placed somewhere. This is template matching.
+
+## What it does
+
+```python
+from lcd_icon_matcher import get_image_metadata
+
+icons = get_image_metadata("scene.bmp", lcd_size="480x320", series="main")
+# [
+#   {"file": "assets/480x320/main/wifi.bmp", "x": 412, "y": 88, "score": 0.98},
+#   {"file": "assets/480x320/main/battery.bmp", "x": 1204, "y": 730, "score": 0.96},
+# ]
+```
+
+## Requirements
+
+| # | Requirement |
+|---|-------------|
+| R1 | Input: BMP or JPEG scene + asset library at `assets/<lcd_size>/<series>/**/*.bmp` |
+| R2 | Return: `[{file, x, y, score}, ...]` in scene coordinates |
+| R3 | Assets appear at most once, never overlap |
+| R4 | Asset file size == rendered size (no scaling) |
+| R5 | Tolerate JPEG noise on the scene |
+| R6 | Handle transparency via alpha channel |
+| R7 | No fixed threshold — pick the score "cliff" automatically |
+| R8 | Fast: ≤ 1 s for 500 assets on a 1080p scene |
+| R9 | Parallel: use multiple cores |
+| R10 | Dependencies: `numpy` + one lightweight I/O lib (Pil-Lite). No Pillow, OpenCV, SciPy |
+
+## API
+
+```python
+get_image_metadata(
+    image_path: str,
+    lcd_size: str,
+    series: str,
+    *,
+    assets_root: str = "assets",
+    num_workers: int | None = None,   # default: min(cpu_count, 8)
+    static_floor: float = 0.55,       # minimum acceptable NCC
+    max_candidates: int = 500,
+) -> list[dict]
+```
+
+Returns an empty list if nothing matches.
+
+## How it works (in one paragraph)
+
+For each asset, pick one distinctive opaque pixel — the *anchor*. Hash all
+assets by their anchor's quantized gray value. Scan the scene once, bucket
+every pixel by the same quantization, then for each asset look up candidate
+positions in the scene and run a local normalized cross-correlation (NCC) at
+each. Keep the best score per asset. Sort all best scores, find the largest
+drop (the "cliff"), cut there. Walk the survivors in score order, skipping
+already-matched assets and overlapping placements.
+
+## Out of scope (v1)
+
+- Rotation, mirroring, partial occlusion
+- Scale/DPI changes
+- Multi-instance matching
+- OCR (planned for v1.1)
+- GUI / CLI daemon
+
+## Success criteria
+
+- ≥ 99% recall on reference corpus
+- 0 false positives on an empty scene
+- ≤ 1 s for 500 assets, 1080p, 4 cores
+- Only `numpy` + `pylite` as runtime deps
+
+## Risks
+
+| Risk | Mitigation |
+|------|------------|
+| JPEG noise breaks anchor lookup | Quantize into buckets of 8, probe neighbors |
+| BMP drops alpha channel | Require PNG for assets, or color-key convention |
+| DPI-scaled scene | Out of scope; caller detects and warns |
+| Similar icons collide | Higher bucket resolution, or 2-pixel anchor (v1.2) |
+
+## Future
+
+- **v1.1** — OCR: return `{"icons": [...], "text": [...]}`, only OCR in the
+  free regions icons don't occupy.
+- **v1.2** — Two-pixel anchors, color-key transparency, on-disk index cache.
+- **v1.3** — `batch_match()` for many scenes sharing one asset library.
